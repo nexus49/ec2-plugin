@@ -1,17 +1,24 @@
 package hudson.plugins.ec2;
 
-public class EC2SpotRetentionStrategy extends EC2RetentionStrategy {
+import java.util.logging.Logger;
 
-	public EC2SpotRetentionStrategy(String idleTerminationMinutes) {
+public class EC2SpotRetentionStrategy extends EC2RetentionStrategy
+{
+
+	public EC2SpotRetentionStrategy(final String idleTerminationMinutes)
+	{
 		super(idleTerminationMinutes);
 	}
 
+	/**
+	 * Try to connect to it ASAP
+	 */
 	@Override
-	public void start(EC2Computer c) {
-		// Do nothing, wait for the slave to connect via JNLP
-		// If we try to connect to it right away there is no server
-		// to connect to due to the delay in Spot requests being fulfilled
-		// By doing nothing we prevent the failed connection error from
-		// displaying to the user
+	public void start(final EC2Computer c)
+	{
+		LOGGER.info("Start requested for " + c.getName());
+		c.connect(false);
 	}
+
+	private static final Logger LOGGER = Logger.getLogger(EC2SpotRetentionStrategy.class.getName());
 }

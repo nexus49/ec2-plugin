@@ -20,6 +20,8 @@ import com.amazonaws.services.ec2.model.TerminateInstancesRequest;
 import hudson.Extension;
 import hudson.model.Hudson;
 import hudson.model.Descriptor.FormException;
+import hudson.plugins.ec2.ssh.EC2SpotUnixLauncher;
+import hudson.plugins.ec2.win.EC2SpotWindowsLauncher;
 import hudson.slaves.NodeProperty;
 
 public final class EC2SpotSlave extends EC2AbstractSlave {
@@ -33,7 +35,7 @@ public final class EC2SpotSlave extends EC2AbstractSlave {
 	@DataBoundConstructor
 	public EC2SpotSlave(String name, String spotInstanceRequestId, String description, String remoteFS, int numExecutors, Mode mode, String initScript, String tmpDir, String labelString, List<? extends NodeProperty<?>> nodeProperties, String remoteAdmin, String jvmopts, String idleTerminationMinutes, List<EC2Tag> tags, String cloudName, boolean usePrivateDnsName, int launchTimeout, AMITypeData amiType) throws FormException, IOException {
 
-		super(name, "", description, remoteFS, numExecutors, mode, labelString, new EC2SpotComputerLauncher(), new EC2SpotRetentionStrategy(idleTerminationMinutes), initScript, tmpDir, nodeProperties, remoteAdmin, jvmopts, false, idleTerminationMinutes, tags, cloudName, usePrivateDnsName, false, launchTimeout, amiType);
+		super(name, "", description, remoteFS, numExecutors, mode, labelString, amiType.isWindows() ? new EC2SpotWindowsLauncher() : new EC2SpotUnixLauncher(), new EC2SpotRetentionStrategy(idleTerminationMinutes), initScript, tmpDir, nodeProperties, remoteAdmin, jvmopts, false, idleTerminationMinutes, tags, cloudName, usePrivateDnsName, false, launchTimeout, amiType);
 		this.name = name;
 		this.spotInstanceRequestId = spotInstanceRequestId;
 	}
@@ -89,7 +91,7 @@ public final class EC2SpotSlave extends EC2AbstractSlave {
 	 * @param requestId
 	 * @return SpotInstanceRequest object for the requestId, or null
 	 */
-	private SpotInstanceRequest getSpotRequest(String spotRequestId){
+	public SpotInstanceRequest getSpotRequest(String spotRequestId){
 		AmazonEC2 ec2 = getCloud().connect();
 
 		DescribeSpotInstanceRequestsRequest dsirRequest = new DescribeSpotInstanceRequestsRequest().withSpotInstanceRequestIds(spotRequestId);
@@ -110,6 +112,17 @@ public final class EC2SpotSlave extends EC2AbstractSlave {
 
 		if (dsirResult == null || siRequests.size() <= 0) return null;
 		return siRequests.get(0);
+	}
+	
+	public boolean isSpotRequestDead(final EC2Computer computer)
+	{
+		final EC2SpotSlave ec2Slave = (EC2SpotSlave) computer.getNode();
+		final SpotInstanceRequest spotRequest = ec2Slave.getSpotRequest(ec2Slave.getSpotInstanceRequestId());
+
+		final boolean isRequestDead = spotRequest.getState().equals(SpotInstanceRequestState.CANCELLED.getCode())
+				|| spotRequest.getState().equals(SpotInstanceRequestState.CLOSED.getCode())
+				|| spotRequest.getState().equals(SpotInstanceRequestState.FAILED.getCode());
+		return isRequestDead;
 	}
 
 	/**

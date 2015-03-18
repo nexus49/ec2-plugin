@@ -13,6 +13,7 @@ import java.util.logging.Logger;
 import jenkins.model.Jenkins;
 
 import com.amazonaws.AmazonClientException;
+import com.amazonaws.services.ec2.model.SpotInstanceRequest;
 
 /**
  * @author Bruno Meneguello
@@ -36,7 +37,30 @@ public class EC2SlaveMonitor extends AsyncPeriodicWork {
     @Override
     protected void execute(TaskListener listener) throws IOException, InterruptedException {
         for (Node node : Jenkins.getInstance().getNodes()) {
-            if (node instanceof EC2AbstractSlave) {
+			if (node instanceof EC2SpotSlave)
+			{
+				final EC2SpotSlave ec2Slave = (EC2SpotSlave) node;
+				final SpotInstanceRequest spotRequest = ec2Slave.getSpotRequest(ec2Slave.getSpotInstanceRequestId());
+
+				try
+				{
+					final boolean isSpotRequestDead = spotRequest.getState().equals(SpotInstanceRequestState.CANCELLED.getCode())
+							|| spotRequest.getState().equals(SpotInstanceRequestState.CLOSED.getCode());
+
+					if (!ec2Slave.isAlive(true) && isSpotRequestDead)
+					{
+						LOGGER.info("EC2 instance is dead: " + ec2Slave.getInstanceId());
+						ec2Slave.terminate();
+					}
+				}
+				catch (final AmazonClientException e)
+				{
+					LOGGER.info("EC2 instance is dead and failed to terminate: " + ec2Slave.getInstanceId());
+					removeNode(ec2Slave);
+				}
+			}
+			else if (node instanceof EC2AbstractSlave)
+			{
                 final EC2AbstractSlave ec2Slave = (EC2AbstractSlave) node;
                 try {
                     if (!ec2Slave.isAlive(true)) {
