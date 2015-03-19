@@ -6,11 +6,13 @@ import com.amazonaws.services.ec2.model.SpotInstanceType;
 public final class SpotConfiguration {
 	public final String spotMaxBidPrice;
 	public final String spotInstanceBidType;
+	public final String spotPriceBuffer;
 	
 	@DataBoundConstructor
-	public SpotConfiguration(String spotMaxBidPrice, String bidType) {
+	public SpotConfiguration(String spotMaxBidPrice, String bidType, String spotPriceBuffer) {
 		this.spotMaxBidPrice = spotMaxBidPrice;
 		this.spotInstanceBidType = bidType;
+		this.spotPriceBuffer = spotPriceBuffer;
 	}
 
 	@Override

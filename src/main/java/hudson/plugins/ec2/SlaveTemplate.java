@@ -24,6 +24,7 @@
 package hudson.plugins.ec2;
 
 import com.amazonaws.AmazonServiceException;
+
 import hudson.Extension;
 import hudson.Util;
 import hudson.model.Describable;
@@ -40,6 +41,7 @@ import hudson.util.ListBoxModel;
 
 import java.io.IOException;
 import java.io.PrintStream;
+import java.math.BigDecimal;
 import java.net.URL;
 import java.util.*;
 import java.util.logging.Logger;
@@ -47,6 +49,7 @@ import java.util.logging.Logger;
 import javax.servlet.ServletException;
 
 import jenkins.slaves.iterators.api.NodeIterator;
+
 import org.apache.commons.codec.binary.Base64;
 import org.apache.commons.lang.StringUtils;
 import org.kohsuke.stapler.DataBoundConstructor;
@@ -56,6 +59,7 @@ import com.amazonaws.AmazonClientException;
 import com.amazonaws.auth.AWSCredentialsProvider;
 import com.amazonaws.services.ec2.AmazonEC2;
 import com.amazonaws.services.ec2.model.*;
+import com.google.common.base.Preconditions;
 
 /**
  * Template of {@link EC2AbstractSlave} to launch.
@@ -264,11 +268,44 @@ public class SlaveTemplate implements Describable<SlaveTemplate> {
             return String.valueOf(instanceCap);
         }
     }
+    
+    public String calculateBidPrice() throws IOException, ServletException {
+    	if(StringUtils.isNotBlank(spotConfig.spotPriceBuffer)) {
+    		Preconditions.checkArgument(getParent() instanceof AmazonEC2Cloud, "Spot instances can only be created with amazon.");
+    		
+    		
+    		// Connect to the EC2 cloud with the access id, secret key, and region queried from the created cloud
+    		AmazonEC2Cloud cloud = (AmazonEC2Cloud)getParent();
+    		AWSCredentialsProvider credentialsProvider = EC2Cloud.createCredentialsProvider(cloud.isUseInstanceProfileForCredentials(), cloud.getAccessId(), cloud.getSecretKey());
+			AmazonEC2 ec2 = EC2Cloud.connect(credentialsProvider, AmazonEC2Cloud.getEc2EndpointUrl(cloud.getRegion()));
+
+    		DescriptorImpl descriptor = (DescriptorImpl)getDescriptor();
+			String currentPrice = descriptor.getCurrentPrice(ec2, type.toString(), zone);
+			
+			BigDecimal currentPriceBD = new BigDecimal(currentPrice);
+			BigDecimal spotPriceBufferBD = new BigDecimal(this.spotConfig.spotPriceBuffer);
+			BigDecimal spotMaxBidPriceBD = new BigDecimal(this.spotConfig.spotMaxBidPrice);
+			BigDecimal calculatedBidPriceBD = currentPriceBD.add(spotPriceBufferBD);
+
+			if(calculatedBidPriceBD.compareTo(spotMaxBidPriceBD) == 1)
+				return SpotConfiguration.normalizeBid(this.spotConfig.spotMaxBidPrice);
+
+			return SpotConfiguration.normalizeBid(calculatedBidPriceBD.toString());
+    	} 
+    		
+    	return SpotConfiguration.normalizeBid(spotConfig.spotMaxBidPrice);
+    }
 
     public String getSpotMaxBidPrice(){
         if (spotConfig == null)
             return null;
         return SpotConfiguration.normalizeBid(spotConfig.spotMaxBidPrice);
+    }
+    
+    public String getSpotPriceBuffer(){
+        if (spotConfig == null || spotConfig.spotPriceBuffer == null)
+            return null;
+        return SpotConfiguration.normalizeBid(spotConfig.spotPriceBuffer);
     }
 
     public String getIamInstanceProfile() {
@@ -976,6 +1013,13 @@ public class SlaveTemplate implements Describable<SlaveTemplate> {
             }
             return FormValidation.error("Not a correct bid price");
         }
+        
+        public FormValidation doCheckSpotPriceBuffer( @QueryParameter String spotPriceBuffer ) {
+            if(StringUtils.isBlank(spotPriceBuffer) || SpotConfiguration.normalizeBid(spotPriceBuffer) != null){
+                return FormValidation.ok();
+            }
+            return FormValidation.error("Not a correct bid price");
+        }
 
         // Retrieve the availability zones for the region
         private ArrayList<String> getAvailabilityZones(AmazonEC2 ec2)  {
@@ -1007,85 +1051,87 @@ public class SlaveTemplate implements Describable<SlaveTemplate> {
                 @QueryParameter String accessId, @QueryParameter String secretKey,
                 @QueryParameter String region, @QueryParameter String type,
                 @QueryParameter String zone ) throws IOException, ServletException {
+        	try {
+        	
+        		// Connect to the EC2 cloud with the access id, secret key, and region queried from the created cloud
+                AWSCredentialsProvider credentialsProvider = EC2Cloud.createCredentialsProvider(useInstanceProfileForCredentials, accessId, secretKey);
+                AmazonEC2 ec2 = EC2Cloud.connect(credentialsProvider, AmazonEC2Cloud.getEc2EndpointUrl(region));
+        		
+        		String cp = getCurrentPrice(ec2, type, zone);
+        		String zoneStr = getZoneString(ec2, zone, region);
+        		return FormValidation.ok("The current Spot price for a " + type + " in the " + zoneStr + " is $" + cp );
+        	} catch(IllegalArgumentException e) {
+        		return FormValidation.error(e.getMessage());
+        	}
+            
+        }
+        
+        public String getCurrentPrice(AmazonEC2 ec2, String type, String zone) {
 
-            String cp = "";
-            String zoneStr = "";
+			Preconditions.checkArgument(ec2 != null, "Amazon EC2 connection has to be provided.");
 
-            // Connect to the EC2 cloud with the access id, secret key, and region queried from the created cloud
-            AWSCredentialsProvider credentialsProvider = EC2Cloud.createCredentialsProvider(useInstanceProfileForCredentials, accessId, secretKey);
-            AmazonEC2 ec2 = EC2Cloud.connect(credentialsProvider, AmazonEC2Cloud.getEc2EndpointUrl(region));
+			try
+			{
+				// Build a new price history request with the currently selected type
+				DescribeSpotPriceHistoryRequest request = new DescribeSpotPriceHistoryRequest();
+				// If a zone is specified, set the availability zone in the request
+				// Else, proceed with no availability zone which will result with the cheapest Spot price
+				if (getAvailabilityZones(ec2).contains(zone))
+				{
+					request.setAvailabilityZone(zone);
+				}
 
-            if(ec2!=null) {
+				/*
+				 * Iterate through the AWS instance types to see if can find a match for the databound String type. This is
+				 * necessary because the AWS API needs the instance type string formatted a particular way to retrieve prices and
+				 * the form gives us the strings in a different format. For example "T1Micro" vs "t1.micro".
+				 */
+				InstanceType ec2Type = null;
 
-                try {
-                    // Build a new price history request with the currently selected type
-                    DescribeSpotPriceHistoryRequest request = new DescribeSpotPriceHistoryRequest();
-                    // If a zone is specified, set the availability zone in the request
-                    // Else, proceed with no availability zone which will result with the cheapest Spot price
-                    if(getAvailabilityZones(ec2).contains(zone)){
-                        request.setAvailabilityZone(zone);
-                        zoneStr = zone + " availability zone";
-                    } else {
-                        zoneStr = region + " region";
-                    }
+				for (InstanceType it : InstanceType.values())
+				{
+					if (it.name().toString().equals(type))
+					{
+						ec2Type = it;
+						break;
+					}
+				}
 
-                    /*
-                     * Iterate through the AWS instance types to see if can find a match for the databound
-                     * String type. This is necessary because the AWS API needs the instance type
-                     * string formatted a particular way to retrieve prices and the form gives us the strings
-                     * in a different format. For example "T1Micro" vs "t1.micro".
-                     */
-                    InstanceType ec2Type = null;
+				// If the type string cannot be matched with an instance type, throw a Form error
+				Preconditions.checkArgument(ec2Type != null, "Could not resolve instance type: " + type);
 
-                    for(InstanceType it : InstanceType.values()){
-                        if (it.name().toString().equals(type)){
-                            ec2Type = it;
-                            break;
-                        }
-                    }
+				Collection<String> instanceType = new ArrayList<String>();
+				instanceType.add(ec2Type.toString());
+				request.setInstanceTypes(instanceType);
+				request.setStartTime(new Date());
 
-                    /*
-                     * If the type string cannot be matched with an instance type,
-                     * throw a Form error
-                     */
-                    if(ec2Type == null){
-                        return FormValidation.error("Could not resolve instance type: " + type);
-                    }
+				// Retrieve the price history request result and store the current price
+				DescribeSpotPriceHistoryResult result = ec2.describeSpotPriceHistory(request);
 
-                    Collection<String> instanceType = new ArrayList<String>();
-                    instanceType.add(ec2Type.toString());
-                    request.setInstanceTypes(instanceType);
-                    request.setStartTime(new Date());
+				// If we could not return the current price of the instance display an error 
+				Preconditions.checkArgument(!result.getSpotPriceHistory().isEmpty() || StringUtils.isBlank(result.getSpotPriceHistory().get(0).getSpotPrice()), "Could not retrieve current Spot price");
+				String currentPrice = result.getSpotPriceHistory().get(0).getSpotPrice();
 
-                    // Retrieve the price history request result and store the current price
-                    DescribeSpotPriceHistoryResult result = ec2.describeSpotPriceHistory(request);
-
-                    if(!result.getSpotPriceHistory().isEmpty()){
-                        SpotPrice currentPrice = result.getSpotPriceHistory().get(0);
-
-                        cp = currentPrice.getSpotPrice();
-                    }
-
-                } catch (AmazonClientException e) {
-                    return FormValidation.error(e.getMessage());
-                }
-            }
-            /*
-             * If we could not return the current price of the instance display an error
-             * Else, remove the additional zeros from the current price and return it to the interface
-             * in the form of a message
-             */
-            if(cp.isEmpty()){
-                return FormValidation.error("Could not retrieve current Spot price");
-            } else {
-                cp = cp.substring(0, cp.length() - 3);
-
-                return FormValidation.ok("The current Spot price for a " + type +
-                        " in the " + zoneStr + " is $" + cp );
-            }
+				// Remove the additional zeros from the current price and return it
+				return currentPrice.substring(0, currentPrice.length() - 3);
+			}
+			catch (AmazonClientException e)
+			{
+				throw new IllegalArgumentException(e.getMessage());
+			}
+		}
+        
+        public String getZoneString(AmazonEC2 ec2, String zone, String region) {
+        	String returnValue; 
+        	if(getAvailabilityZones(ec2).contains(zone)) {
+        		returnValue =  zone + " availability zone";
+        	} else {
+        		returnValue = region + " region";
+        	}
+        	return returnValue;
         }
     }
-
+    
     private static final Logger LOGGER = Logger.getLogger(SlaveTemplate.class.getName());
 }
 
