@@ -269,7 +269,7 @@ public class SlaveTemplate implements Describable<SlaveTemplate> {
         }
     }
     
-    public String calculateBidPrice() throws IOException, ServletException {
+    public String calculateBidPrice() {
     	if(StringUtils.isNotBlank(spotConfig.spotPriceBuffer)) {
     		Preconditions.checkArgument(getParent() instanceof AmazonEC2Cloud, "Spot instances can only be created with amazon.");
     		
@@ -280,7 +280,7 @@ public class SlaveTemplate implements Describable<SlaveTemplate> {
 			AmazonEC2 ec2 = EC2Cloud.connect(credentialsProvider, AmazonEC2Cloud.getEc2EndpointUrl(cloud.getRegion()));
 
     		DescriptorImpl descriptor = (DescriptorImpl)getDescriptor();
-			String currentPrice = descriptor.getCurrentPrice(ec2, type.toString(), zone);
+			String currentPrice = descriptor.getCurrentPrice(ec2, type.name(), zone);
 			
 			BigDecimal currentPriceBD = new BigDecimal(currentPrice);
 			BigDecimal spotPriceBufferBD = new BigDecimal(this.spotConfig.spotPriceBuffer);
@@ -590,7 +590,7 @@ public class SlaveTemplate implements Describable<SlaveTemplate> {
                 throw new AmazonClientException("Invalid Spot price specified: " + getSpotMaxBidPrice());
             }
 
-            spotRequest.setSpotPrice(getSpotMaxBidPrice());
+            spotRequest.setSpotPrice(calculateBidPrice());
             spotRequest.setInstanceCount(Integer.valueOf(1));
             spotRequest.setType(getBidType());
 
@@ -637,7 +637,6 @@ public class SlaveTemplate implements Describable<SlaveTemplate> {
                     launchSpecification.setSecurityGroups(securityGroupSet);
             }
 
-            String slaveName = UUID.randomUUID().toString();
             String userDataString = Base64.encodeBase64String(userData.getBytes());
 
             launchSpecification.setUserData(userDataString);
