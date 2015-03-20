@@ -31,12 +31,12 @@ public abstract class EC2SpotComputerLauncher extends ComputerLauncher
 			final EC2Computer computer = (EC2Computer) _computer;
 			final PrintStream logger = listener.getLogger();
 
-			final String baseMsg = "Node " + computer.getName() + "(SpotRequest " + computer.getSpotInstanceRequestId() + ")";
 			String msg = null;
 			long timeToWait = 5000L;
 
 			OUTER: while (true)
 			{
+				final String baseMsg = "Node " + computer.getName();
 				if (computer.getNode() instanceof EC2SpotSlave)
 				{
 					EC2SpotSlave ec2Slave = (EC2SpotSlave) computer.getNode();
@@ -48,7 +48,7 @@ public abstract class EC2SpotComputerLauncher extends ComputerLauncher
 
 					computer.updateInstanceIdFromSpotRequest();
 					timeToWait = StringUtils.isBlank(computer.getInstanceId()) ? 10000L : 5000L;
-					msg = baseMsg + " is still requesting the instance, waiting 10s";
+					msg = baseMsg + " SpotRequest is still requesting the instance, waiting 10s";
 				}
 
 				if (StringUtils.isNotBlank(computer.getInstanceId()))
